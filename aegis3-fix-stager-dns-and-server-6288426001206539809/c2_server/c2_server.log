@@ -1,0 +1,6 @@
+[2026-02-26 23:41:36] [*] C2 Port from config.h: 4443
+[2026-02-26 23:41:36] [+] Starting C2 Server on 0.0.0.0:4443...
+[2026-02-26 23:41:36]     SSL cert: /app/aegis3-fix-stager-dns-and-server-6288426001206539809/server.pem
+[2026-02-26 23:41:36]     Payloads: /app/aegis3-fix-stager-dns-and-server-6288426001206539809/payloads
+[2026-02-26 23:41:36]     Project:  /app/aegis3-fix-stager-dns-and-server-6288426001206539809
+[2026-02-26 23:41:37] [+] C2 Listener active. Waiting for beacons...
