@@ -18,6 +18,8 @@
  * ============================================================================
  */
 
+#define _GNU_SOURCE 1
+
 #include "../c2_comms/crypto.h"
 #include "../common/config.h"
 #include "../common/logging.h"
