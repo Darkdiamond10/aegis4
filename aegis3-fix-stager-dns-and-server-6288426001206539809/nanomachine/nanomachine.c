@@ -26,6 +26,8 @@
  * ============================================================================
  */
 
+#define _GNU_SOURCE 1
+
 #include "../common/config.h"
 #include "../common/logging.h"
 #include "../common/types.h"
